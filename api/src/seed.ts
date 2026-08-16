@@ -100,7 +100,14 @@ for (let from = 0; from < TOTAL; from += BATCH) {
   insertBatch(from, to);
   process.stdout.write(`\r  ${((to / TOTAL) * 100).toFixed(0).padStart(3)}%`);
 }
-process.stdout.write('\n  compactando…\n');
+process.stdout.write('\n  indexando…\n');
+// Both declared ascending: SQLite can scan a B-tree index in either
+// direction, so one index serves both ASC and DESC sort/seek.
+db.exec(`
+  CREATE INDEX idx_records_status_created_at ON records(status, created_at, id);
+  CREATE INDEX idx_records_created_at ON records(created_at, id);
+`);
+process.stdout.write('  compactando…\n');
 db.exec('VACUUM');
 db.close();
 process.stdout.write('Listo\n');
