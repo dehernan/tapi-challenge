@@ -1,0 +1,23 @@
+{
+  "name": "tapi-fe-challenge-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API de apoyo para el desafío técnico de Frontend de tapi",
+  "type": "module",
+  "scripts": {
+    "seed": "tsx src/seed.ts",
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}
