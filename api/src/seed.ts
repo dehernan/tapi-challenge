@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import { STATUSES } from './constants.js';
 import { DB_PATH } from './db.js';
 
 const TOTAL = Number(process.env.RECORDS ?? 1_000_000);
@@ -31,8 +32,6 @@ function hashSeed(input: string) {
 const CURRENCIES = [
   ['ARS', 2], ['MXN', 2], ['CLP', 0], ['COP', 2], ['PEN', 2], ['USD', 2],
 ] as const;
-
-const STATUSES = ['pending', 'processing', 'paid', 'failed', 'refunded', 'cancelled'] as const;
 
 const A = ['Servicio', 'Factura', 'Cuota', 'Recarga', 'Convenio', 'Débito', 'Pago', 'Liquidación', 'Suscripción'];
 const B = ['Edenor', 'Metrogas', 'Camuzzi', 'Naturgy', 'Telecom', 'Movistar', 'Claro', 'Aysa', 'Edesur', 'CFE', 'Telmex', 'Aguas Andinas', 'Enel', 'Sedapal', 'EPM', 'Codensa', 'Personal'];
