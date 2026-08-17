@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // api/ is its own npm project (own tsconfig, own deps) — lint it
+    // separately, not with the Next.js-flavored frontend config.
+    "api/**",
   ]),
 ]);
 
