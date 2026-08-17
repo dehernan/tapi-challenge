@@ -194,8 +194,184 @@ The stack for this slice is deliberately narrow:
     small (≤100 rows) by design; it solves a rendering problem this slice
     doesn't have.
 
-## Full panel design
+## Full panel design (designed, not built)
 
-_(pending — bulk selection, detail view, observability, and the
-development roadmap, written as a documentation-only pass after the slice
-works)_
+Everything below is design for the rest of the brief — reasoned through,
+not built in this pass.
+
+### The two remaining filters
+
+- **Amount range.** Mechanically the same as the date-range filter — a
+  `(amount, id)` index, same `from`/`to`-style params. The real question
+  isn't mechanical, it's semantic: `amount` is stored per-record in that
+  currency's minor unit, and the table mixes six currencies. A raw
+  `amount >= 10000` filter would silently compare CLP pesos to USD cents,
+  which is meaningless. Two honest options: (a) scope the amount filter to
+  require a `status`-style single currency selection alongside it, so the
+  comparison is always apples-to-apples, or (b) normalize to a reporting
+  currency via exchange rates — real complexity (rates change over time,
+  which rate applies to a historical record?) that I wouldn't take on
+  without a product decision first. I'd ship (a) and flag (b) as a real
+  follow-up, not fake precision by silently comparing raw integers.
+- **Text search (`name`).** At 1M+ rows, `LIKE '%...%'` is a full table
+  scan with no index able to help — this needs SQLite FTS5: a virtual
+  table indexing `name`, kept in sync with `records` via `INSERT`/`UPDATE`
+  triggers (or rebuilt alongside the seed script, same idea as the current
+  indexes). Combined with existing filters, the query becomes a join
+  between the FTS5 match and the base table's filtered/sorted set — the
+  FTS5 side handles the text match efficiently, the existing indexes still
+  handle `status`/date-range/sort on the joined rows. FTS5 also gives a
+  natural `bm25()` relevance score, which is a fine default sort *when a
+  search term is active*, distinct from the `createdAt` default otherwise.
+
+### Bulk selection
+
+The brief's specific ask — "select the N records matching the current
+filter, not just the visible page" — needs a selection model that isn't
+just a list of IDs, because that list could be hundreds of thousands of
+entries long.
+
+**Model:** selection is either
+- `{ mode: 'include', ids: string[] }` — a handful of explicitly-picked
+  rows (the common case: check a few boxes across a page or two), or
+- `{ mode: 'exclude', filter: RecordsFilters, excludedIds: string[] }` —
+  "everything matching the current filter, except these few I unchecked"
+  (the Gmail "select all 42,318 that match" pattern, entered via a banner
+  that appears once you check every box on the visible page and there's
+  more beyond it).
+
+**Where it lives:** *not* the URL. Filters/sort/page are "what am I
+looking at" — shareable, meant to survive a reload. Selection is "what am
+I about to act on" — ephemeral, scoped to this session, and arguably
+*should* be dropped on reload rather than silently persisted (nobody
+wants a stale bulk-destructive selection to survive a refresh unnoticed).
+It lives in local component/store state instead.
+
+**The bulk action itself:** a single endpoint (e.g.
+`POST /records/bulk-action`) accepting either shape from the model above,
+reusing `buildFilterWhere` for the `exclude` case (plus an
+`id NOT IN (...)` clause for the excluded IDs). The part worth calling
+out: `better-sqlite3` is synchronous, so an unbounded bulk update over
+hundreds of thousands of rows would block the whole server for the
+duration — the exact risk we already designed around for deep pagination.
+Same mitigation shape: cap synchronous bulk actions to a safe size (a few
+thousand rows), and route anything larger through an async job
+(`202 Accepted` + a job id the client polls) instead of blocking the
+request. Any destructive/state-changing bulk action also needs a
+confirmation step showing the exact count first — the same "operator
+needs to know how many records match" principle that drove
+`/records/count` as its own endpoint.
+
+### Detail view
+
+Route: `/records/[id]`. Two independent data sources, matching the
+brief's "loaded independently, doesn't block the rest of the layout"
+requirement — and the same principle we already applied to
+`/records/count` vs. `/records`, one level deeper:
+
+```mermaid
+flowchart TD
+    Page["/records/[id] page"]
+    Core["Record fields\nGET /records/:id"]
+    Events["Event history\nGET /records/:id/events"]
+    Page --> Core
+    Page --> Events
+    Core -.->|"own loading/error,\nErrorBoundary"| CoreUI["renders independently"]
+    Events -.->|"own loading/error,\nErrorBoundary"| EventsUI["renders independently\n(failure here doesn't\ntake down Core)"]
+```
+
+`GET /records/:id` (the record's own fields) and `GET /records/:id/events`
+(its event history — no `events` table exists yet, so this is modeled as
+a future resource, not built) are separate queries with separate
+loading/error states, same pattern as `useRecordsQuery` /
+`useRecordsCountQuery`. One addition beyond what the list needed: each
+section gets wrapped in a real React `ErrorBoundary`, not just a
+TanStack Query `isError` check. `isError` handles a *failed fetch*
+gracefully (which is most of what "a section breaks" means here), but a
+genuine render-time exception in one section's component is a different
+failure mode that only an actual error boundary catches — without one, a
+bug in the events section could still crash the whole page even though
+its data fetching "succeeded." Both matter for real partial-failure
+isolation.
+
+Navigating from a row to `/records/[id]` via `<Link>` (not a full
+navigation) keeps the list's filter/sort/page state in browser history for
+free — "back" returns to the exact list view the operator left, no extra
+work needed beyond what the URL-state design already gives us.
+
+### Observability
+
+The brief is explicit: this is a business tool, and breakage needs to be
+*noticed*, not just silently logged somewhere no one reads. Concretely:
+
+- Structured logging in the API (e.g. `pino`) with request IDs, so a
+  failed request can be traced end-to-end.
+- Error tracking (e.g. Sentry) on both sides — frontend error boundaries
+  reporting caught exceptions, backend reporting uncaught
+  exceptions/rejections — not just `console.error`.
+- Actual alerting on top of that tracking (error-rate thresholds, specific
+  failure signatures like DB-connection errors or failed bulk actions),
+  not just a dashboard someone has to remember to check.
+- A basic `GET /health` endpoint — doesn't exist today, and is the
+  cheapest possible signal that the API process itself is up.
+
+### Locale, made dynamic
+
+Amount formatting already handles the real multi-currency requirement
+correctly (per-record currency, correct minor-unit divisor). What's
+hardcoded is the *display* locale (`es-AR`) — number grouping, date
+format. The real version derives it from a user/org setting (persisted
+server-side) or the `Accept-Language` header on first load, rather than a
+constant.
+
+### Development plan
+
+**Already built:** pagination (keyset), two combinable filters
+(status + date range), one sortable column, loading/empty/error states,
+a separate count endpoint, a first keyboard-shortcut pass.
+
+**Iteration 2** — highest-value gaps from the brief, in the order I'd
+tackle them:
+1. Amount-range and text-search filters (with the currency caveat above
+   resolved as a product decision first)
+2. `amount`/`dueDate` sortable columns
+3. Detail view with independently-loaded, error-boundary-isolated events
+4. Bulk selection + one real bulk action
+
+**Iteration 3+:**
+1. Observability (error tracking, structured logs, alerting)
+2. Dynamic locale
+3. Async job queue for bulk actions past the synchronous-safe size
+4. Adopt TanStack Table (once sorting/selection complexity justifies it),
+   Radix/shadcn (once a combobox/modal/toast is actually needed), and
+   TanStack Virtual (if some view ever needs to render far more rows than
+   fit on screen at once)
+5. Composite filter×sort indexes added reactively, based on which
+   combinations real usage actually exercises
+
+**Scaling to more entities:** the feature-sliced shape
+(`src/features/<entity>/{api,components,hooks}`) repeats per entity —
+`customers`, `invoices`, whatever comes next — each with its own route.
+Cross-cutting pieces (the query client setup, `Kbd`, an error-boundary
+wrapper, the `Intl` formatting helpers) move into a shared `src/lib/` or
+`src/components/` layer once a second or third feature actually needs
+them — not pre-extracted speculatively now, on the same "build what's
+needed" logic used throughout this pass.
+
+### Assumptions & open questions
+
+- **Amount filtering across currencies** needs a product decision (scope
+  to one currency vs. normalize via exchange rates) — flagged above, not
+  resolved unilaterally.
+- **Text search** is assumed to target `name` only, the one free-text
+  field; extending it to `id` (exact/prefix match) is a small follow-up if
+  operators turn out to search by record ID.
+- **Bulk action semantics** (what the action actually *does* — status
+  change, export, something else) are left open since the brief doesn't
+  name one; the design above is about the selection/execution mechanics,
+  which hold regardless of the specific action.
+- **Event history** has no backing table in the current schema — assumed
+  a future resource, modeled here purely to demonstrate the independent-
+  loading/isolation pattern the brief asks for.
+- **Bulk selection does not survive a reload** — a deliberate choice
+  (ephemeral, session-scoped state), not an oversight.
