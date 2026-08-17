@@ -148,9 +148,51 @@ returns `{ total }` on its own, instead of being embedded in every
   under heavy concurrent writes they could reflect slightly different
   moments. Acceptable for an ops tool, not for a financial ledger.
 
-## Frontend architecture
+## Frontend architecture (built)
 
-_(pending — written once the slice is built)_
+### Feature-sliced, not route-sliced
+
+```
+src/
+  app/            # Next.js routing + the two providers below
+  features/
+    records/      # everything the records panel needs: api client,
+                   # URL-state hook, query hooks, UI components
+```
+
+The panel lives directly at `/` for now, since it's the only feature. As
+more entities show up (customers, invoices, …) each gets its own
+`features/<entity>/` slice and its own route (`/customers`, …) — `app/`
+stays thin (routing + layout + providers), the feature folders hold the
+actual logic. This is the same shape scaled up, not a restructure.
+
+### TanStack Query + nuqs, not more
+
+The stack for this slice is deliberately narrow:
+
+- **TanStack Query** owns server state (`useRecordsQuery`,
+  `useRecordsCountQuery`) — caching, `placeholderData: keepPreviousData`
+  so Prev/Next doesn't flash a loading state, and independent
+  loading/error per query (see the count-endpoint rationale above).
+- **nuqs** owns URL state (`useRecordsFilters`) — the concrete
+  implementation of the `cursor`/`edge`/filter/`sort` URL scheme described
+  above. React component state is used for neither of these; both are
+  either server-cache or URL, matching "todo el estado de la vista vive en
+  la URL."
+- **No TanStack Table, no Radix/shadcn, no virtualization** in this pass.
+  A native `<table>`, `<select>`, and two `<input type=date>` are enough
+  for one sortable column, two filters, and Prev/Next. Each gets adopted
+  when something actually needs it, not ahead of time:
+  - **TanStack Table** once there are enough columns/sort states/row
+    selection to justify headless table logic over a mapped array.
+  - **Radix/shadcn** once an interaction needs real primitives — a
+    multi-select combobox for status, a bulk-action confirmation dialog,
+    toasts for background errors. A single native `<select>` doesn't need
+    a UI kit.
+  - **TanStack Virtual** once a single view needs to render far more rows
+    than fit on screen at once — doesn't apply here because pages are
+    small (≤100 rows) by design; it solves a rendering problem this slice
+    doesn't have.
 
 ## Full panel design
 
