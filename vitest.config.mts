@@ -10,7 +10,7 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "jsdom",
+    environment: "happy-dom",
     setupFiles: ["./vitest.setup.ts"],
     // `api/` is its own npm project (its own vitest run via `npm test` in
     // api/) — exclude it here so the root config doesn't try to execute
