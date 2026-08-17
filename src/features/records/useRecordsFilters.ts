@@ -41,6 +41,10 @@ export function useRecordsFilters() {
     void setState({ cursor, edge: "before" satisfies Edge });
   }
 
+  function clearFilters() {
+    void setState({ status: null, from: null, to: null, cursor: null, edge: null });
+  }
+
   return {
     status: state.status,
     from: state.from,
@@ -53,5 +57,6 @@ export function useRecordsFilters() {
     toggleSortDir,
     goToNextPage,
     goToPreviousPage,
+    clearFilters,
   };
 }
