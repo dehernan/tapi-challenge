@@ -13,26 +13,26 @@ for getting there.
 ```mermaid
 flowchart LR
     subgraph Browser
-        URL["URL search params\n(filters, sort, cursor)"]
+        URL["URL search params<br/>(filters, sort, cursor)"]
         UI["Records table + filters"]
     end
 
     subgraph "Next.js app"
-        nuqs["nuqs\n(URL ⇄ state)"]
-        RQ["TanStack Query\n(server cache)"]
+        nuqs["nuqs<br/>(URL ⇄ state)"]
+        RQ["TanStack Query<br/>(server cache)"]
     end
 
     subgraph "Express API"
-        Validate["zod\n(query validation)"]
-        Query["Query builder\n(filter WHERE + keyset seek)"]
+        Validate["zod<br/>(query validation)"]
+        Query["Query builder<br/>(filter WHERE + keyset seek)"]
     end
 
-    DB[("SQLite\nrecords table\n+ indexes")]
+    DB[("SQLite<br/>records table<br/>+ indexes")]
 
     URL <--> nuqs
     nuqs <--> UI
     UI <--> RQ
-    RQ -- "GET /records\nGET /records/count" --> Validate
+    RQ -- "GET /records<br/>GET /records/count" --> Validate
     Validate --> Query
     Query --> DB
     DB --> Query --> Validate --> RQ
@@ -194,6 +194,55 @@ The stack for this slice is deliberately narrow:
     small (≤100 rows) by design; it solves a rendering problem this slice
     doesn't have.
 
+## Testing (built)
+
+Vitest on both sides, with separate configs — `api/` is its own npm
+project, and the frontend's config carries React/DOM settings that don't
+belong in a Node test run.
+
+**The API is tested against a real seeded SQLite database, not mocks.** The
+suite spawns `seed.ts` with `RECORDS=500` into a temp DB before importing
+the app. Mocking the database here would test nothing worth testing: the
+logic most likely to be wrong is the keyset seek predicate and how the
+filter `WHERE` composes with it, and that only misbehaves against a real
+query planner. The highest-value case is the **cursor round-trip** — page
+forward with `endCursor`, then back with `startCursor`, and assert you land
+on the exact same rows. Keyset pagination's characteristic bug is an
+off-by-one at the page boundary that silently skips or repeats a row, and
+that assertion is what catches it. A second case pages through an entire
+filtered result set and asserts the row count matches `/records/count`,
+which covers both endpoints agreeing.
+
+**On the frontend, the tests target invariants, not markup.** For
+`useRecordsFilters`: that changing a filter clears `cursor`/`edge`, and
+that `clearFilters` resets filters and pagination while preserving
+`sortDir`. Those are the rules that make URL state coherent, and they're
+easy to break later without noticing. For `RecordsTable`: the
+loading/empty/error states resolve as expected against a mocked
+`fetchRecords`. For the composer: that context reaches parts at different
+depths and that misuse throws — the contract, not the stubs.
+
+**Deliberately not tested:** exact markup, styling, and the composer's stub
+bodies. Asserting on those buys regression noise, not confidence.
+
+### The gap worth naming
+
+Nothing verifies that the frontend and the API still agree on the contract.
+The DTO types in `src/features/records/api.ts` are hand-written, and we
+chose not to re-validate responses with zod on the client (we own both
+ends, so it seemed like redundant runtime work). The cost of that choice is
+precisely this: if the API's response shape changed, the frontend would
+compile fine and break at runtime, and no test would catch it.
+
+Three ways to close it, in increasing order of cost: generate the client
+types from the server's zod schemas so there is one source of truth; add a
+contract test that asserts a real API response parses into the expected
+shape; or add an end-to-end test (Playwright) covering the flow the unit
+tests can't — load a filtered URL, page forward, reload, and confirm the
+same rows come back. The E2E is the one I'd write first, because
+reload-safety is the central promise of the URL-state design and it's
+currently only verified by hand.
+
 ## Full panel design (designed, not built)
 
 Everything below is design for the rest of the brief — reasoned through,
@@ -272,12 +321,12 @@ requirement — and the same principle we already applied to
 ```mermaid
 flowchart TD
     Page["/records/[id] page"]
-    Core["Record fields\nGET /records/:id"]
-    Events["Event history\nGET /records/:id/events"]
+    Core["Record fields<br/>GET /records/:id"]
+    Events["Event history<br/>GET /records/:id/events"]
     Page --> Core
     Page --> Events
-    Core -.->|"own loading/error,\nErrorBoundary"| CoreUI["renders independently"]
-    Events -.->|"own loading/error,\nErrorBoundary"| EventsUI["renders independently\n(failure here doesn't\ntake down Core)"]
+    Core -.->|"own loading/error,<br/>ErrorBoundary"| CoreUI["renders independently"]
+    Events -.->|"own loading/error,<br/>ErrorBoundary"| EventsUI["renders independently<br/>(failure here doesn't<br/>take down Core)"]
 ```
 
 `GET /records/:id` (the record's own fields) and `GET /records/:id/events`
@@ -304,16 +353,47 @@ work needed beyond what the URL-state design already gives us.
 The brief is explicit: this is a business tool, and breakage needs to be
 *noticed*, not just silently logged somewhere no one reads. Concretely:
 
+The distinction that matters for sequencing isn't cheap vs. expensive —
+it's **what actually notifies a person** vs. what only helps you
+investigate afterwards. Structured logs and timing data are the second
+kind: they sit in stdout waiting to be read. Shipping only those would
+mean nobody finds out about anything, which is exactly what the brief
+warns against.
+
+**Things that tell a human something is wrong:**
+
+- An external uptime check against a `GET /health` endpoint, emailing or
+  posting to Slack when it fails. Beyond the endpoint itself this is no
+  code at all, and it covers the one failure no internal logging can
+  report — the API being down, because the process that would do the
+  reporting is the one that died.
+- Error tracking (e.g. Sentry) on both sides, frontend and backend. The
+  code is a DSN and an init call; most trackers notify on a
+  newly-seen error type out of the box, which is already enough for
+  someone to find out.
+- **Reporting from the error states we already built.** `RecordsTable`
+  and `Pagination` have `isError` branches today, and they're dead ends:
+  the operator sees "Count unavailable" and nobody else ever learns of
+  it. Wiring those exact points to the tracker costs almost nothing and
+  catches the realistic failure — a failing API call, not a JavaScript
+  crash. An operator shrugging at a broken panel is precisely the
+  scenario to design against.
+
+**Things that only help once you're already looking:**
+
 - Structured logging in the API (e.g. `pino`) with request IDs, so a
   failed request can be traced end-to-end.
-- Error tracking (e.g. Sentry) on both sides — frontend error boundaries
-  reporting caught exceptions, backend reporting uncaught
-  exceptions/rejections — not just `console.error`.
-- Actual alerting on top of that tracking (error-rate thresholds, specific
-  failure signatures like DB-connection errors or failed bulk actions),
-  not just a dashboard someone has to remember to check.
-- A basic `GET /health` endpoint — doesn't exist today, and is the
-  cheapest possible signal that the API process itself is up.
+- Query-timing instrumentation: log each query's duration alongside the
+  filter+sort combination that produced it. This is what turns "add
+  composite indexes reactively" from a nice sentence into something
+  actionable — without it there's no record of which combinations
+  operators actually hit, or which ones are slow.
+
+**And the part that's a decision, not a feature:** alert thresholds that
+don't generate noise, domain-specific signatures worth paging on (failed
+bulk actions, DB errors), and who they route to. Tuning this before there
+is real traffic to tune against is guesswork, which is why it lands after
+the tooling rather than with it.
 
 ### Locale, made dynamic
 
@@ -330,24 +410,59 @@ constant.
 (status + date range), one sortable column, loading/empty/error states,
 a separate count endpoint, a first keyboard-shortcut pass.
 
-**Iteration 2** — highest-value gaps from the brief, in the order I'd
-tackle them:
-1. Amount-range and text-search filters (with the currency caveat above
-   resolved as a product decision first)
-2. `amount`/`dueDate` sortable columns
-3. Detail view with independently-loaded, error-boundary-isolated events
-4. Bulk selection + one real bulk action
+Sequenced by dependency and risk rather than by value alone: the point of
+the ordering is that nothing which mutates data at scale ships before
+there's a way to notice it breaking.
 
-**Iteration 3+:**
-1. Observability (error tracking, structured logs, alerting)
-2. Dynamic locale
-3. Async job queue for bulk actions past the synchronous-safe size
-4. Adopt TanStack Table (once sorting/selection complexity justifies it),
-   Radix/shadcn (once a combobox/modal/toast is actually needed), and
-   TanStack Virtual (if some view ever needs to render far more rows than
-   fit on screen at once)
-5. Composite filter×sort indexes added reactively, based on which
-   combinations real usage actually exercises
+**Iteration 2 — finish the list view.** Everything here reuses patterns
+already in place:
+
+1. `amount` / `dueDate` sortable columns — one `(column, id)` index each,
+   following the pattern already established for `createdAt`
+2. Text search via FTS5 — the only new infrastructure in this iteration
+3. The reload-safety E2E and the contract gap from
+   [Testing](#testing-built), before this iteration's extra surface area
+   makes them more expensive to retrofit
+4. **Enough observability that someone finds out when this breaks** — the
+   brief treats that as a requirement, not a nicety, so it doesn't wait
+   for a later iteration. Specifically: a `GET /health` endpoint with an
+   external uptime check pointed at it, an error tracker initialised on
+   both sides with its default notifications, and the existing `isError`
+   branches in `RecordsTable` / `Pagination` reporting to it instead of
+   dead-ending at the operator. Plus the diagnostic half — request-ID
+   logging and query-timing instrumentation — which is cheap here and
+   starts accumulating the usage data the index strategy below depends
+   on, including whether FTS5 actually performs once it lands.
+
+The amount-range filter is designed and ready but blocked on the
+cross-currency product decision above; raise it at the start of this
+iteration and build it whenever the answer arrives.
+
+**Iteration 3 — detail view, and the rest of the safety net.**
+
+1. Detail view with independently-loaded, error-boundary-isolated
+   sections — self-contained, and what satisfies the brief's
+   partial-failure requirement
+2. Alerting policy on top of iteration 2's tooling: thresholds that don't
+   generate noise, domain-specific signatures worth paging on, and who
+   they route to. Deliberately after the tooling — tuning thresholds
+   before there's real traffic to tune against is guesswork.
+
+**Iteration 4 — bulk selection and one real bulk action.** Deliberately
+last among the brief's requirements: it's the only one that mutates data
+at scale, so it wants the confirmation UX, the synchronous-size cap, and
+iteration 3's alerting already in place. Shipping it earlier would make
+the most destructive operation in the panel also the one nobody is told
+about when it fails.
+
+**Later:**
+
+1. Dynamic locale
+2. Async job queue, once bulk actions outgrow the synchronous-safe cap
+3. TanStack Table, Radix/shadcn, and TanStack Virtual — each at the
+   trigger described above, not before
+4. Composite filter×sort indexes, chosen from the query timings iteration
+   2 started collecting rather than guessed at
 
 **Scaling to more entities:** the feature-sliced shape
 (`src/features/<entity>/{api,components,hooks}`) repeats per entity —
