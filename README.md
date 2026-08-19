@@ -1,9 +1,17 @@
 # tapi-challenge
 
 Records/transactions management panel for tapi's frontend challenge — a
-Next.js frontend + an Express/SQLite API. See [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-for the design rationale and [`docs/CHALLENGE.md`](./docs/CHALLENGE.md) for
-the original brief.
+Next.js frontend + an Express/SQLite API.
+
+The three deliverables:
+
+1. **The working slice** — setup below.
+2. **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — design rationale for what's
+   built and how the rest of the panel would work.
+3. **[`src/composer/`](./src/composer/README.md)** — the composition
+   refactor.
+
+[`docs/CHALLENGE.md`](./docs/CHALLENGE.md) has the original brief.
 
 ## Prerequisites
 
